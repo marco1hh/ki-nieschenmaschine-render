@@ -24,28 +24,30 @@ pip install edge-tts requests
 
 - name: Sprachausgabe erzeugen
 run: |
-edge-tts --voice de-DE-KatjaNeural \
---text "${{ github.event.client_payload.sprechertext }}" \
---write-media voice.mp3
+edge-tts --voice de-DE-ConradNeural --text "${{ github.event.client_payload.sprechertext }}" --write-media audio.mp3
 
-- name: Hintergrundbild herunterladen
+- name: Bild herunterladen
 run: |
-curl -L "${{ github.event.client_payload.image_url }}" -o background.jpg
+curl -L "${{ github.event.client_payload.image_url }}" -o image.jpg
 
-- name: Video bauen
+- name: Video rendern
 run: |
-ffmpeg -loop 1 -i background.jpg -i voice.mp3 \
--c:v libx264 -tune stillimage -c:a aac -b:a 192k \
--pix_fmt yuv420p -shortest -vf "scale=1080:1920" \
+ffmpeg -loop 1 -i image.jpg -i audio.mp3 -c:v libx264 -tune stillimage \
+-c:a aac -b:a 192k -pix_fmt yuv420p -shortest \
+-vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" \
 output.mp4
 
-- name: Release-Upload + n8n-Callback
-run: |
-TAG="render-${{ github.run_id }}"
-gh release create "$TAG" output.mp4 --title "$TAG" --notes "Automatisches Render"
-DOWNLOAD_URL=$(gh release view "$TAG" --json assets --jq '.assets[0].url')
-curl -X POST "${{ github.event.client_payload.callback_url }}" \
--H "Content-Type: application/json" \
--d "{\"status\":\"done\",\"video_url\":\"$DOWNLOAD_URL\",\"run_id\":\"${{ github.run_id }}\"}"
+- name: GitHub Release erstellen
 env:
 GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+run: |
+TAG="render-${{ github.run_id }}"
+gh release create "$TAG" output.mp4 --title "$TAG" --notes "Automatisch gerendertes Video"
+DOWNLOAD_URL=$(gh release view "$TAG" --json assets --jq '.assets[0].browser_download_url')
+echo "DOWNLOAD_URL=$DOWNLOAD_URL" >> $GITHUB_ENV
+
+- name: Callback an n8n senden
+run: |
+curl -X POST "${{ github.event.client_payload.callback_url }}" \
+-H "Content-Type: application/json" \
+-d "{\"production_id\": \"${{ github.event.client_payload.production_id }}\", \"video_url\": \"${{ env.DOWNLOAD_URL }}\"}"
