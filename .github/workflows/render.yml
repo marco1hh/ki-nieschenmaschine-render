@@ -1,0 +1,51 @@
+name: Render Video
+
+on:
+repository_dispatch:
+types: [render]
+
+jobs:
+render:
+runs-on: ubuntu-latest
+steps:
+- name: Repository auschecken
+uses: actions/checkout@v4
+
+- name: Python einrichten
+uses: actions/setup-python@v5
+with:
+python-version: "3.11"
+
+- name: Abhängigkeiten installieren
+run: |
+sudo apt-get update
+sudo apt-get install -y ffmpeg
+pip install edge-tts requests
+
+- name: Sprachausgabe erzeugen
+run: |
+edge-tts --voice de-DE-KatjaNeural \
+--text "${{ github.event.client_payload.sprechertext }}" \
+--write-media voice.mp3
+
+- name: Hintergrundbild herunterladen
+run: |
+curl -L "${{ github.event.client_payload.image_url }}" -o background.jpg
+
+- name: Video bauen
+run: |
+ffmpeg -loop 1 -i background.jpg -i voice.mp3 \
+-c:v libx264 -tune stillimage -c:a aac -b:a 192k \
+-pix_fmt yuv420p -shortest -vf "scale=1080:1920" \
+output.mp4
+
+- name: Release-Upload + n8n-Callback
+run: |
+TAG="render-${{ github.run_id }}"
+gh release create "$TAG" output.mp4 --title "$TAG" --notes "Automatisches Render"
+DOWNLOAD_URL=$(gh release view "$TAG" --json assets --jq '.assets[0].url')
+curl -X POST "${{ github.event.client_payload.callback_url }}" \
+-H "Content-Type: application/json" \
+-d "{\"status\":\"done\",\"video_url\":\"$DOWNLOAD_URL\",\"run_id\":\"${{ github.run_id }}\"}"
+env:
+GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
