@@ -4,6 +4,9 @@ on:
 repository_dispatch:
 types: [render]
 
+permissions:
+contents: write
+
 jobs:
 render:
 runs-on: ubuntu-latest
@@ -11,43 +14,79 @@ steps:
 - name: Repository auschecken
 uses: actions/checkout@v4
 
-- name: Python einrichten
+- name: Python 3.11 einrichten
 uses: actions/setup-python@v5
 with:
 python-version: "3.11"
 
-- name: Abhängigkeiten installieren
+- name: ffmpeg installieren
 run: |
 sudo apt-get update
 sudo apt-get install -y ffmpeg
-pip install edge-tts requests
 
-- name: Sprachausgabe erzeugen
+- name: edge-tts installieren
 run: |
-edge-tts --voice de-DE-ConradNeural --text "${{ github.event.client_payload.sprechertext }}" --write-media audio.mp3
+python -m pip install --upgrade pip
+pip install edge-tts
+
+- name: Produktions-ID setzen
+id: meta
+run: |
+PRODUCTION_ID="${{ github.event.client_payload.production_id }}"
+if [ -z "$PRODUCTION_ID" ]; then
+PRODUCTION_ID="prod-${{ github.run_id }}"
+fi
+echo "production_id=$PRODUCTION_ID" >> "$GITHUB_OUTPUT"
+
+- name: Sprechertext in Datei schreiben
+run: |
+cat > sprechertext.txt << 'EOF'
+${{ github.event.client_payload.sprechertext }}
+EOF
+
+- name: Audiodatei per edge-tts erzeugen
+run: |
+edge-tts --voice de-DE-ConradNeural --file sprechertext.txt --write-media audio.mp3
 
 - name: Bild herunterladen
 run: |
-curl -L "${{ github.event.client_payload.image_url }}" -o image.jpg
+curl -L -o image.jpg "${{ github.event.client_payload.image_url }}"
 
-- name: Video rendern
+- name: Video mit ffmpeg rendern
 run: |
-ffmpeg -loop 1 -i image.jpg -i audio.mp3 -c:v libx264 -tune stillimage \
--c:a aac -b:a 192k -pix_fmt yuv420p -shortest \
+ffmpeg -y \
+-loop 1 -i image.jpg \
+-i audio.mp3 \
 -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" \
-output.mp4
+-c:v libx264 -pix_fmt yuv420p \
+-c:a aac -b:a 192k \
+-shortest \
+video.mp4
 
-- name: GitHub Release erstellen
-env:
-GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+- name: Release-Tag erzeugen
+id: tag
 run: |
-TAG="render-${{ github.run_id }}"
-gh release create "$TAG" output.mp4 --title "$TAG" --notes "Automatisch gerendertes Video"
-DOWNLOAD_URL=$(gh release view "$TAG" --json assets --jq '.assets[0].browser_download_url')
-echo "DOWNLOAD_URL=$DOWNLOAD_URL" >> $GITHUB_ENV
+TAG="video-${{ steps.meta.outputs.production_id }}-${{ github.run_id }}"
+echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-- name: Callback an n8n senden
+- name: Video als GitHub Release veröffentlichen
+id: release
+uses: softprops/action-gh-release@v2
+with:
+tag_name: ${{ steps.tag.outputs.tag }}
+name: "Video ${{ steps.meta.outputs.production_id }}"
+files: video.mp4
+env:
+GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+- name: Video-URL bestimmen
+id: url
+run: |
+VIDEO_URL="https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.tag }}/video.mp4"
+echo "video_url=$VIDEO_URL" >> "$GITHUB_OUTPUT"
+
+- name: Callback an client_payload.callback_url senden
 run: |
 curl -X POST "${{ github.event.client_payload.callback_url }}" \
 -H "Content-Type: application/json" \
--d "{\"production_id\": \"${{ github.event.client_payload.production_id }}\", \"video_url\": \"${{ env.DOWNLOAD_URL }}\"}"
+-d "{\"production_id\": \"${{ steps.meta.outputs.production_id }}\", \"video_url\": \"${{ steps.url.outputs.video_url }}\"}"
