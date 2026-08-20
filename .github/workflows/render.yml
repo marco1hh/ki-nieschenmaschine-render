@@ -1,32 +1,59 @@
 name: Render Video
 
 on:
-repository_dispatch:
-types: [render]
+  repository_dispatch:
+    types: [render]
 
 permissions:
-contents: write
+  contents: write
 
 jobs:
-render:
-runs-on: ubuntu-latest
-steps:
-- name: Repository auschecken
-uses: actions/checkout@v4
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Repository auschecken
+        uses: actions/checkout@v4
 
-- name: Python 3.11 einrichten
-uses: actions/setup-python@v5
-with:
-python-version: "3.11"
+      - name: Python 3.11 einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-- name: Abhaengigkeiten installieren
-run: |
-sudo apt-get update
-sudo apt-get install -y ffmpeg
-pip install edge-tts requests
+      - name: Abhaengigkeiten installieren
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          pip install edge-tts requests
 
-- name: Sprachausgabe erzeugen (edge-tts)
-env:
-SPRECHERTEXT: ${{ github.event.client_payload.sprechertext }}
-run: |
-edge-t
+      - name: Sprachausgabe erzeugen
+        env:
+          SPRECHERTEXT: ${{ github.event.client_payload.sprechertext }}
+        run: |
+          edge-tts --voice de-DE-KatjaNeural --text "$SPRECHERTEXT" --write-media audio.mp3
+
+      - name: Bild herunterladen
+        env:
+          IMAGE_URL: ${{ github.event.client_payload.image_url }}
+        run: |
+          curl -L "$IMAGE_URL" -o image.jpg
+
+      - name: Video rendern (ffmpeg)
+        run: |
+          ffmpeg -y -loop 1 -i image.jpg -i audio.mp3 -vf "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" -c:v libx264 -c:a aac -shortest output.mp4
+
+      - name: GitHub Release erstellen
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: render-${{ github.run_id }}
+          files: output.mp4
+
+      - name: Callback an n8n senden
+        env:
+          CALLBACK_URL: ${{ github.event.client_payload.callback_url }}
+          PRODUCTION_ID: ${{ github.event.client_payload.production_id }}
+        run: |
+          VIDEO_URL="https://github.com/${{ github.repository }}/releases/download/render-${{ github.run_id }}/output.mp4"
+          curl -X POST "$CALLBACK_URL" \
+            -H "Content-Type: application/json" \
+            -d "{\"production_id\": \"$PRODUCTION_ID\", \"video_url\": \"$VIDEO_URL\"}"
