@@ -2,7 +2,7 @@ name: Render Video
 
 on:
   repository_dispatch:
-    types: [render]
+    types: [render-video]
 
 permissions:
   contents: write
